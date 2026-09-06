@@ -3,12 +3,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    env_file:
-      - .env
     environment:
-      HOST: 0.0.0.0
-      PORT: 8787
+      HOST: ${HOST}
+      PORT: ${PORT}
       REFERENCE_DIR: /app/references
+      LLM_PROVIDER: gemini
+      LLM_MODEL: ${LLM_MODEL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN}
     ports:
       - "8787:8787"
     restart: unless-stopped
