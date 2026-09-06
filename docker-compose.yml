@@ -1,0 +1,15 @@
+services:
+  ftir-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      REFERENCE_DIR: /app/references
+    ports:
+      - "8787:8787"
+    restart: unless-stopped
+    init: true
