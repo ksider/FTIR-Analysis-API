@@ -6,7 +6,7 @@ services:
     environment:
       HOST: ${HOST}
       PORT: ${PORT}
-      REFERENCE_DIR: /app/references
+      REFERENCE_DIR: ${REFERENCE_DIR}
       LLM_PROVIDER: gemini
       LLM_MODEL: ${LLM_MODEL}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
