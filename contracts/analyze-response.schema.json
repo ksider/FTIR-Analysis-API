@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ftir.example/schemas/analyze-response.schema.json",
+  "title": "FTIR comparative analysis response",
+  "type": "object",
+  "required": ["schemaVersion", "interpretation", "reactionAssessment", "changeSummary", "spectra", "limitations"],
+  "properties": {
+    "schemaVersion": { "const": "2.0" },
+    "interpretation": { "type": "string" },
+    "candidates": { "type": "array", "items": { "type": "object" } },
+    "supporting_peaks": { "type": "array", "items": { "type": "object" } },
+    "missing_evidence": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array", "items": { "type": "object" } },
+    "reactionAssessment": {
+      "type": "object",
+      "required": ["status", "summary", "confidence", "evidence", "missingEvidence"],
+      "properties": {
+        "status": { "type": "string", "enum": ["passed", "not_passed", "inconclusive"] },
+        "summary": { "type": "string" },
+        "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+        "evidence": { "type": "array", "items": { "type": "object" } },
+        "missingEvidence": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "spectra": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["spectrumId", "peakAssignments"],
+        "properties": {
+          "spectrumId": { "type": "string" },
+          "peakAssignments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["peakId", "nu", "group", "confidence", "reasoning"],
+              "properties": {
+                "peakId": { "type": "string" },
+                "nu": { "type": "number" },
+                "group": { "type": "string" },
+                "confidence": { "type": "string" },
+                "reasoning": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "changeSummary": {
+      "type": "object",
+      "required": ["disappeared", "appeared", "shifted", "intensityChanges", "widthChanges"],
+      "properties": {
+        "disappeared": { "type": "array", "items": { "type": "object" } },
+        "appeared": { "type": "array", "items": { "type": "object" } },
+        "shifted": { "type": "array", "items": { "type": "object" } },
+        "intensityChanges": { "type": "array", "items": { "type": "object" } },
+        "widthChanges": { "type": "array", "items": { "type": "object" } }
+      },
+      "additionalProperties": false
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } },
+    "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+    "model": { "type": "string" },
+    "promptVersion": { "type": "string" },
+    "created_at": { "type": "string" },
+    "comparison": { "type": "object" }
+  },
+  "additionalProperties": false
+}

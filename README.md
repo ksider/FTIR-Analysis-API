@@ -1,16 +1,75 @@
-# FTIR Analysis API
+# FTIR Merger backend
 
-Standalone backend for the static FTIR frontend.
+Отдельный Node.js backend для FTIR Merger. Он не содержит frontend и работает
+как самостоятельный API-модуль:
 
-## Local
+- принимает точки спектров и запускает Python peak detector;
+- возвращает пики, baseline diagnostics и обработанную кривую;
+- сравнивает пики между спектрами;
+- отправляет подтверждённые данные выбранному LLM-провайдеру;
+- хранит reference bands и diagnostic zones на стороне сервера.
+
+Полная документация проекта находится в корневом [README.md](../README.md).
+
+## Локальный запуск
+
+Требуется Node.js `>=20.6` и Python `>=3.9`.
 
 ```bash
 cp .env.example .env
-# Put GEMINI_API_KEY in .env locally.
+python3 -m pip install -r requirements.txt
 npm start
 ```
 
-Default endpoint: `http://127.0.0.1:8787`.
+По умолчанию API доступен по адресу `http://127.0.0.1:8787`.
+
+```bash
+curl http://127.0.0.1:8787/health
+```
+
+Для smoke-тестов без внешней LLM:
+
+```env
+LLM_PROVIDER=mock
+```
+
+Для Gemini:
+
+```env
+LLM_PROVIDER=gemini
+LLM_MODEL=gemini-3.5-flash-lite
+GEMINI_API_KEY=your_key
+```
+
+Также поддерживается Mistral через `MISTRAL_API_KEY`.
+
+## Endpoints
+
+### `POST /api/peaks/detect`
+
+Получает `schemaVersion: "2.0"`, точки одного или нескольких спектров и
+параметры detector. Каждый спектр обрабатывается независимо. Ответ содержит
+`peakObservations[]`, `spectrumId`, информацию о baseline engine и массивы
+для визуального preview.
+
+Основной алгоритм использует `scipy.signal.find_peaks`. Baseline-коррекция
+работает через `pybaselines`; при отсутствии научных зависимостей backend
+возвращает builtin fallback и предупреждение.
+
+Поддерживаются `arPLS`, `airPLS`, `AsLS`, `SNIP`, `Rubberband`, `Linear` и `None`.
+
+### `POST /api/analyze`
+
+Получает подтверждённые пики, все спектры и сравнительные группы. LLM получает
+данные пиков по всем спектрам, чтобы интерпретировать сдвиги, появление,
+исчезновение и изменение интенсивности/ширины полос.
+
+JSON Schema находятся в `contracts/`:
+
+- `peaks-detect-request.schema.json`;
+- `peaks-detect-response.schema.json`;
+- `analyze-request.schema.json`;
+- `analyze-response.schema.json`.
 
 ## Docker
 
@@ -20,28 +79,19 @@ docker compose up --build -d
 curl http://127.0.0.1:8787/health
 ```
 
-Required production settings:
+Dockerfile устанавливает Python-зависимости в отдельное virtualenv и задаёт
+`PYTHON_BIN=/opt/ftir-venv/bin/python`.
 
-```env
-HOST=0.0.0.0
-PORT=8787
-REFERENCE_DIR=/app/references
-LLM_PROVIDER=gemini
-LLM_MODEL=gemini-3.5-flash-lite
-GEMINI_API_KEY=...
-ALLOWED_ORIGIN=https://your-frontend.example
-```
+Перед публичным запуском задай `ALLOWED_ORIGIN` точным origin frontend и
+передай API-ключи через secret manager или переменные окружения.
 
-Never commit `.env`. Use the hosting provider's encrypted environment variables
-or secret manager in production. The `references/` directory must contain
-`bands_master.md` and `diagnostic_zones.md`.
+## Python dependencies and licenses
 
-## Frontend connection
+| Пакет | Лицензия | Использование |
+|---|---|---|
+| SciPy `>=1.11,<2` | BSD-3-Clause | поиск пиков и измерение ширины |
+| pybaselines `>=1.2,<2` | BSD-3-Clause | baseline correction |
+| NumPy (транзитивная зависимость) | BSD-3-Clause | численные массивы |
 
-In the static frontend's `config.js`, set:
-
-```js
-analysisApi: 'https://your-api.example/api/analyze'
-```
-
-The backend accepts only confirmed peaks and returns the interpretation result.
+При распространении Docker-образа необходимо сохранять notices SciPy,
+pybaselines, NumPy и их bundled-зависимостей.

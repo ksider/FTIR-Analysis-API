@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ftir.example/schemas/peaks-detect-response.schema.json",
+  "title": "FTIR peak detection response",
+  "type": "object",
+  "required": ["schemaVersion", "peakObservations", "settings"],
+  "properties": {
+    "schemaVersion": { "const": "2.0" },
+    "peakObservations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/peakObservation" }
+    },
+    "settings": { "type": "object" },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "engine": { "type": "string" },
+    "processing": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["spectrumId", "baselineMethod", "baselineEngine", "signalType", "displayYUnit", "diagnostics"],
+        "properties": {
+          "spectrumId": { "type": "string" },
+          "baselineMethod": { "type": "string" },
+          "baselineEngine": { "type": "string" },
+          "signalType": { "type": "string", "enum": ["transmittance", "absorbance", "intensity", "unknown"] },
+          "displayYUnit": { "type": "string" },
+          "diagnostics": {
+            "type": "object",
+            "required": ["x", "signal", "baseline", "corrected"],
+            "properties": {
+              "x": { "type": "array", "items": { "type": "number" } },
+              "signal": { "type": "array", "items": { "type": "number" } },
+              "baseline": { "type": "array", "items": { "type": "number" } },
+              "corrected": { "type": "array", "items": { "type": "number" } },
+              "broadCorrected": { "type": "array", "items": { "type": "number" } },
+              "displayCorrected": { "type": "array", "items": { "type": "number" } }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "peakObservation": {
+      "type": "object",
+      "required": ["id", "spectrumId", "nu", "detectionMethod"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+        "spectrumId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+        "nu": { "type": "number", "minimum": 0 },
+        "originalNu": { "type": "number", "minimum": 0 },
+        "height": { "type": ["number", "null"] },
+        "prominence": { "type": ["number", "null"], "minimum": 0 },
+        "widthCm1": { "type": ["number", "null"], "minimum": 0 },
+        "fwhmCm1": { "type": ["number", "null"], "minimum": 0 },
+        "shape": { "type": ["string", "null"], "enum": ["sharp", "broad", "band", "shoulder", "plateau", "unknown", null] },
+        "direction": { "type": "string", "enum": ["absorption", "emission", "unknown"] },
+        "detectionMethod": { "type": "string", "enum": ["automatic", "manual", "automatic_confirmed", "imported"] },
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "localWindow": {
+          "type": ["array", "null"],
+          "maxItems": 1000,
+          "items": {
+            "type": "array",
+            "prefixItems": [{ "type": "number" }, { "type": "number" }],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -2,14 +2,26 @@ FROM node:20-bookworm-slim
 
 WORKDIR /app
 
+COPY requirements.txt /tmp/ftir-requirements.txt
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 python3-venv \
+  && python3 -m venv /opt/ftir-venv \
+  && apt-get purge -y --auto-remove python3-venv \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY package.json ./
 COPY server.js ./
 COPY references ./references
+COPY peak_detector ./peak_detector
+
+RUN /opt/ftir-venv/bin/pip install --no-cache-dir -r /tmp/ftir-requirements.txt
 
 ENV NODE_ENV=production
 ENV PORT=8787
 ENV HOST=0.0.0.0
 ENV REFERENCE_DIR=/app/references
+ENV PYTHON_BIN=/opt/ftir-venv/bin/python
 
 EXPOSE 8787
 

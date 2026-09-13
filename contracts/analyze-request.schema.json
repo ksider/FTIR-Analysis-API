@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ftir.example/schemas/analyze-request.schema.json",
+  "title": "FTIR comparative analysis request",
+  "type": "object",
+  "required": ["schemaVersion", "spectra", "peakObservations", "peakGroups", "confirmedPeakIds"],
+  "properties": {
+    "schemaVersion": { "const": "2.0" },
+    "sample": { "type": "object", "additionalProperties": { "type": "string" } },
+    "spectra": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/spectrumMeta" }
+    },
+    "peakObservations": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": { "$ref": "#/$defs/peakObservation" }
+    },
+    "peakGroups": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": { "$ref": "#/$defs/peakGroup" }
+    },
+    "confirmedPeakIds": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": { "type": "string" }
+    },
+    "analysisSettings": {
+      "type": "object",
+      "properties": {
+        "language": { "type": "string", "enum": ["ru", "en", "sr"] },
+        "reactionMode": { "type": "boolean" },
+        "toleranceCm1": { "type": "number", "exclusiveMinimum": 0 },
+        "shiftThresholdCm1": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "spectrumMeta": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "sourceFile": { "type": "string" },
+        "role": { "type": "string", "enum": ["before", "after", "control", "repeat", "unknown"] },
+        "signalType": { "type": "string", "enum": ["transmittance", "absorbance", "intensity", "unknown"] },
+        "xUnit": { "type": "string" },
+        "pointCount": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "peakObservation": {
+      "type": "object",
+      "required": ["id", "spectrumId", "nu"],
+      "properties": {
+        "id": { "type": "string" },
+        "spectrumId": { "type": "string" },
+        "nu": { "type": "number", "minimum": 0 },
+        "originalNu": { "type": ["number", "null"] },
+        "height": { "type": ["number", "null"] },
+        "prominence": { "type": ["number", "null"], "minimum": 0 },
+        "widthCm1": { "type": ["number", "null"], "minimum": 0 },
+        "fwhmCm1": { "type": ["number", "null"], "minimum": 0 },
+        "shape": { "type": ["string", "null"] },
+        "direction": { "type": ["string", "null"] },
+        "detectionMethod": { "type": "string" },
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "peakGroup": {
+      "type": "object",
+      "required": ["id", "members", "centerNu", "toleranceCm1"],
+      "properties": {
+        "id": { "type": "string" },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["spectrumId", "peakId"],
+            "properties": {
+              "spectrumId": { "type": "string" },
+              "peakId": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "centerNu": { "type": "number", "minimum": 0 },
+        "toleranceCm1": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
