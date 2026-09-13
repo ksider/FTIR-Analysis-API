@@ -8,6 +8,7 @@ is installed.
 
 import json
 import math
+import statistics
 import sys
 
 
@@ -51,6 +52,16 @@ def linear_baseline(x_values, values):
     return [y0 + (y1 - y0) * ((x - x0) / span) for x in x_values]
 
 
+def robust_x_step(x_values):
+    """Return a representative spacing for a possibly uneven x-grid."""
+    steps = [
+        abs(x_values[index + 1] - x_values[index])
+        for index in range(len(x_values) - 1)
+        if x_values[index + 1] != x_values[index]
+    ]
+    return statistics.median(steps) if steps else 1.0
+
+
 def estimate_baseline(x_values, values, settings):
     """Estimate a smooth background and keep a safe local fallback."""
     method = str(settings.get("baselineMethod", "arpls") or "arpls").lower()
@@ -72,10 +83,7 @@ def estimate_baseline(x_values, values, settings):
         elif method == "asls":
             baseline, _ = fitter.asls(values, lam=lam, p=asymmetry)
         elif method == "snip":
-            x_step = min(
-                (abs(x_values[index + 1] - x_values[index]) for index in range(len(x_values) - 1) if x_values[index + 1] != x_values[index]),
-                default=1.0,
-            )
+            x_step = robust_x_step(x_values)
             half_window = max(1, int(round(float(settings.get("baselineSnipWindowCm1", 80) or 80) / x_step)))
             baseline, _ = fitter.snip(values, max_half_window=half_window)
         elif method == "rubberband":
@@ -128,7 +136,7 @@ def fallback_find_peaks(values, min_distance, min_prominence, prominence_window=
     return selected, [values[index] - min(values[max(0, index - window):min(len(values), index + window + 1)]) for index in selected]
 
 
-def merge_peak_candidates(primary_indices, primary_prominences, broad_indices, broad_prominences, min_distance, cross_engine_distance):
+def merge_peak_candidates(primary_indices, primary_prominences, broad_indices, broad_prominences, min_distance_cm1, cross_engine_distance_cm1, x_values=None):
     """Merge duplicate maxima reported by the fine and broad passes.
 
     The two passes work on different signals, so the same physical band can
@@ -146,17 +154,58 @@ def merge_peak_candidates(primary_indices, primary_prominences, broad_indices, b
     ]
     candidates.sort(key=lambda item: item[1], reverse=True)
     selected = []
+    coordinate = lambda index: x_values[index] if x_values and 0 <= index < len(x_values) else index
     for index, prominence, source in candidates:
         duplicate = False
         for other_index, _, other_source in selected:
-            distance = cross_engine_distance if source != other_source else min_distance
-            if abs(index - other_index) < distance:
+            distance = cross_engine_distance_cm1 if source != other_source else min_distance_cm1
+            if abs(coordinate(index) - coordinate(other_index)) < distance:
                 duplicate = True
                 break
         if not duplicate:
             selected.append((index, prominence, source))
     selected.sort(key=lambda item: item[0])
-    return [item[0] for item in selected], [item[1] for item in selected]
+    return [item[0] for item in selected], [item[1] for item in selected], [item[2] for item in selected]
+
+
+def x_at_index_position(x_values, position):
+    """Interpolate a fractional sample position onto the actual x-grid."""
+    if not x_values:
+        return float(position)
+    if position <= 0:
+        return x_values[0]
+    last = len(x_values) - 1
+    if position >= last:
+        return x_values[last]
+    left = int(math.floor(position))
+    fraction = position - left
+    return x_values[left] + (x_values[left + 1] - x_values[left]) * fraction
+
+
+def scipy_widths_cm1(x_values, values, indices):
+    """Calculate widths in cm⁻¹, including uneven x-grid interpolation."""
+    if scipy_peak_widths is None or not indices:
+        return {}
+    try:
+        width_values, _, left_ips, right_ips = scipy_peak_widths(values, indices, rel_height=0.5)
+        return {
+            index: abs(x_at_index_position(x_values, right_ips[position]) - x_at_index_position(x_values, left_ips[position]))
+            for position, index in enumerate(indices)
+        }
+    except Exception:
+        return {}
+
+
+def quality_flags(nu, width):
+    """Mark common FTIR nuisance regions without silently deleting candidates."""
+    flags = []
+    if 2280 <= nu <= 2400:
+        flags.append("possible_atmospheric_co2")
+    if nu < 500:
+        flags.append("possible_low_frequency_artifact")
+    if width is None:
+        flags.append("width_unresolved")
+    return flags
 
 
 def local_fwhm(x_values, values, index, baseline_value):
@@ -211,7 +260,7 @@ def detect_spectrum(spectrum, settings):
     baseline, baseline_method, baseline_engine, baseline_warning = estimate_baseline(x_values, smoothed, settings)
     corrected = [value - base for value, base in zip(smoothed, baseline)]
 
-    x_step = min((abs(x_values[index + 1] - x_values[index]) for index in range(len(x_values) - 1) if x_values[index + 1] != x_values[index]), default=1.0)
+    x_step = robust_x_step(x_values)
     min_separation = float(settings.get("minSeparationCm1", 8.0) or 8.0)
     min_distance_samples = max(1, int(round(min_separation / x_step)))
     min_prominence = float(settings.get("minProminence", 0.02) or 0.0)
@@ -225,10 +274,6 @@ def detect_spectrum(spectrum, settings):
     broad_distance_samples = max(
         min_distance_samples,
         int(round(float(settings.get("broadMinSeparationCm1", 180) or 180) / x_step)),
-    )
-    cross_engine_distance_samples = max(
-        min_distance_samples,
-        int(round(float(settings.get("crossEngineMergeCm1", 20) or 20) / x_step)),
     )
     broad_smoothed = moving_average(signal, broad_smoothing_window)
     # The adaptive baseline used by the fine pass can correctly treat a very
@@ -257,41 +302,59 @@ def detect_spectrum(spectrum, settings):
             prominence=min_prominence,
             wlen=min(len(corrected), max(3, broad_window_samples)),
         )
-        peak_indices, prominences = merge_peak_candidates(
+        peak_indices, prominences, sources = merge_peak_candidates(
             peak_indices,
             properties.get("prominences", []),
             broad_indices,
             broad_properties.get("prominences", []),
-            min_distance_samples,
-            cross_engine_distance_samples,
+            min_separation,
+            float(settings.get("crossEngineMergeCm1", 20) or 20),
+            x_values,
         )
     else:
         primary_indices, primary_prominences = fallback_find_peaks(corrected, min_distance_samples, min_prominence, min_distance_samples * 2)
         broad_indices, broad_prominences = fallback_find_peaks(broad_corrected, broad_distance_samples, min_prominence, broad_window_samples)
-        peak_indices, prominences = merge_peak_candidates(
+        peak_indices, prominences, sources = merge_peak_candidates(
             primary_indices,
             primary_prominences,
             broad_indices,
             broad_prominences,
-            min_distance_samples,
-            cross_engine_distance_samples,
+            min_separation,
+            float(settings.get("crossEngineMergeCm1", 20) or 20),
+            x_values,
         )
 
-    ranked = sorted(zip(peak_indices, prominences), key=lambda item: item[1], reverse=True)[:max_peaks]
+    search_range = settings.get("searchRangeCm1") or {}
+    try:
+        search_min = float(search_range.get("min"))
+        search_max = float(search_range.get("max"))
+        if not math.isfinite(search_min) or not math.isfinite(search_max):
+            raise ValueError
+        search_min, search_max = min(search_min, search_max), max(search_min, search_max)
+    except (AttributeError, TypeError, ValueError):
+        search_min, search_max = x_values[0], x_values[-1]
+    in_search_range = [
+        position for position, index in enumerate(peak_indices)
+        if search_min <= x_values[index] <= search_max
+    ]
+    peak_indices = [peak_indices[position] for position in in_search_range]
+    prominences = [prominences[position] for position in in_search_range]
+    sources = [sources[position] for position in in_search_range]
+
+    ranked = sorted(zip(peak_indices, prominences, sources), key=lambda item: item[1], reverse=True)[:max_peaks]
     ranked.sort(key=lambda item: x_values[item[0]], reverse=True)
     max_prominence = max((float(item[1]) for item in ranked), default=1.0)
     results = []
 
     widths = {}
-    if scipy_peak_widths is not None and peak_indices:
-        try:
-            width_values = scipy_peak_widths(corrected, peak_indices, rel_height=0.5)[0]
-            widths = {index: float(width_values[position]) * x_step for position, index in enumerate(peak_indices)}
-        except Exception:
-            widths = {}
+    for source, values in (("primary", corrected), ("broad", broad_corrected)):
+        source_indices = [index for index, _, candidate_source in ranked if candidate_source == source]
+        for index, width in scipy_widths_cm1(x_values, values, source_indices).items():
+            widths[(source, index)] = width
 
-    for index, prominence in ranked:
-        width = widths.get(index) or local_fwhm(x_values, corrected, index, 0.0)
+    for index, prominence, source in ranked:
+        values = broad_corrected if source == "broad" else corrected
+        width = widths.get((source, index)) or local_fwhm(x_values, values, index, 0.0)
         nu = x_values[index]
         if width is None:
             shape = "unknown"
@@ -304,12 +367,13 @@ def detect_spectrum(spectrum, settings):
         lo = max(0, index - max(4, min_distance_samples * 2))
         hi = min(len(points), index + max(4, min_distance_samples * 2) + 1)
         local_window = [[x_values[item], y_values[item]] for item in range(lo, hi)]
+        flags = quality_flags(nu, width)
         results.append({
             "id": "peak-%s-%s" % (spectrum["id"], str(round(nu, 2)).replace(".", "_")),
             "spectrumId": spectrum["id"],
             "nu": round(nu, 4),
             "originalNu": round(nu, 4),
-            "height": round(corrected[index], 6),
+            "height": round(values[index], 6),
             "prominence": round(float(prominence), 6),
             "widthCm1": round(float(width), 4) if width is not None else None,
             "fwhmCm1": round(float(width), 4) if width is not None else None,
@@ -317,6 +381,7 @@ def detect_spectrum(spectrum, settings):
             "direction": "absorption",
             "detectionMethod": "automatic",
             "confidence": round(min(1.0, max(0.0, float(prominence) / max_prominence)), 4),
+            "qualityFlags": flags,
             "localWindow": local_window,
         })
     warnings = []
@@ -346,6 +411,7 @@ def detect_spectrum(spectrum, settings):
         "baselineEngine": baseline_engine,
         "signalType": signal_type,
         "displayYUnit": display_y_unit,
+        "searchRangeCm1": {"min": search_min, "max": search_max},
         "diagnostics": diagnostics,
     }
 

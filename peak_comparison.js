@@ -24,7 +24,7 @@ function normalizeObservation(observation, index = 0) {
 
 function groupPeaks(observations, toleranceCm1 = 8) {
   const tolerance = Math.max(0.1, Number(toleranceCm1) || 8);
-  const normalized = observations.map(normalizeObservation).filter(Boolean).sort((a, b) => b.nu - a.nu);
+  const normalized = observations.map((observation, index) => normalizeObservation(observation, index)).filter(Boolean).sort((a, b) => b.nu - a.nu);
   const groups = [];
 
   normalized.forEach((observation) => {
@@ -56,27 +56,66 @@ function groupPeaks(observations, toleranceCm1 = 8) {
 function buildComparisonMatrix(spectra, observations, settings = {}) {
   const toleranceCm1 = Math.max(0.1, Number(settings.toleranceCm1) || 8);
   const shiftThresholdCm1 = Math.max(0.1, Number(settings.shiftThresholdCm1) || 2);
-  const spectrumIds = (spectra || []).map((spectrum) => String(spectrum.id)).filter(Boolean);
-  const normalized = observations.map(normalizeObservation).filter(Boolean);
+  const prominenceChangeThreshold = Math.max(0, Number(settings.prominenceChangeThreshold) || 0.05);
+  const widthChangeThreshold = Math.max(0, Number(settings.widthChangeThreshold) || 1);
+  const spectrumMeta = (spectra || []).filter((spectrum) => spectrum && spectrum.id).map((spectrum) => ({
+    ...spectrum,
+    id: String(spectrum.id),
+  }));
+  const spectrumIds = spectrumMeta.map((spectrum) => spectrum.id);
+  const normalized = observations.map((observation, index) => normalizeObservation(observation, index)).filter(Boolean);
   const groups = groupPeaks(normalized, toleranceCm1);
   const changes = [];
-  const baselineSpectrumId = spectrumIds[0] || normalized[0]?.spectrumId || null;
+  const baselineSpectrumId = spectrumMeta.find((spectrum) => spectrum.role === 'before')?.id
+    || spectrumIds[0]
+    || normalized[0]?.spectrumId
+    || null;
+  const comparisonSpectrumIds = spectrumIds.filter((spectrumId) => spectrumId !== baselineSpectrumId);
+  const matrix = [];
 
   groups.forEach((group) => {
     const bySpectrum = new Map(group.observations.map((observation) => [observation.spectrumId, observation]));
-    spectrumIds.forEach((spectrumId) => {
-      if (!bySpectrum.has(spectrumId)) {
-        group.observations.push(null);
-      }
+    const presence = spectrumIds.map((spectrumId) => {
+      const observation = bySpectrum.get(spectrumId) || null;
+      return {
+        spectrumId,
+        present: Boolean(observation),
+        peakId: observation?.id || null,
+        nu: observation?.nu ?? null,
+        prominence: observation?.prominence ?? null,
+        fwhmCm1: observation?.fwhmCm1 ?? null,
+        widthCm1: observation?.widthCm1 ?? null,
+      };
+    });
+    matrix.push({
+      groupId: group.id,
+      centerNu: group.centerNu,
+      presence,
     });
     if (!baselineSpectrumId) return;
     const baseline = bySpectrum.get(baselineSpectrumId) || null;
-    spectrumIds.slice(1).forEach((spectrumId) => {
+    comparisonSpectrumIds.forEach((spectrumId) => {
       const current = bySpectrum.get(spectrumId) || null;
       if (baseline && !current) {
-        changes.push({ type: 'disappeared_peak', groupId: group.id, fromSpectrumId: baselineSpectrumId, toSpectrumId: spectrumId, nu: baseline.nu });
+        changes.push({
+          type: 'disappeared_peak',
+          groupId: group.id,
+          fromSpectrumId: baselineSpectrumId,
+          toSpectrumId: spectrumId,
+          fromNu: baseline.nu,
+          toNu: null,
+          nu: baseline.nu,
+        });
       } else if (!baseline && current) {
-        changes.push({ type: 'appeared_peak', groupId: group.id, fromSpectrumId: baselineSpectrumId, toSpectrumId: spectrumId, nu: current.nu });
+        changes.push({
+          type: 'appeared_peak',
+          groupId: group.id,
+          fromSpectrumId: baselineSpectrumId,
+          toSpectrumId: spectrumId,
+          fromNu: null,
+          toNu: current.nu,
+          nu: current.nu,
+        });
       } else if (baseline && current) {
         const deltaNu = Number((current.nu - baseline.nu).toFixed(4));
         const deltaProminence = baseline.prominence !== null && current.prominence !== null
@@ -88,11 +127,29 @@ function buildComparisonMatrix(spectra, observations, settings = {}) {
         if (Math.abs(deltaNu) >= shiftThresholdCm1) {
           changes.push({ type: 'shifted_peak', groupId: group.id, fromSpectrumId: baselineSpectrumId, toSpectrumId: spectrumId, fromNu: baseline.nu, toNu: current.nu, deltaNu });
         }
-        if (deltaProminence !== null && deltaProminence !== 0) {
-          changes.push({ type: 'prominence_change', groupId: group.id, fromSpectrumId: baselineSpectrumId, toSpectrumId: spectrumId, deltaProminence });
+        if (deltaProminence !== null && Math.abs(deltaProminence) >= prominenceChangeThreshold) {
+          changes.push({
+            type: 'prominence_change',
+            groupId: group.id,
+            fromSpectrumId: baselineSpectrumId,
+            toSpectrumId: spectrumId,
+            nu: current.nu,
+            fromProminence: baseline.prominence,
+            toProminence: current.prominence,
+            deltaProminence,
+          });
         }
-        if (deltaFwhm !== null && deltaFwhm !== 0) {
-          changes.push({ type: 'width_change', groupId: group.id, fromSpectrumId: baselineSpectrumId, toSpectrumId: spectrumId, deltaFwhm });
+        if (deltaFwhm !== null && Math.abs(deltaFwhm) >= widthChangeThreshold) {
+          changes.push({
+            type: 'width_change',
+            groupId: group.id,
+            fromSpectrumId: baselineSpectrumId,
+            toSpectrumId: spectrumId,
+            nu: current.nu,
+            fromFwhmCm1: baseline.fwhmCm1,
+            toFwhmCm1: current.fwhmCm1,
+            deltaFwhm,
+          });
         }
       }
     });
@@ -101,8 +158,12 @@ function buildComparisonMatrix(spectra, observations, settings = {}) {
   return {
     baselineSpectrumId,
     spectrumIds,
+    comparisonSpectrumIds,
     toleranceCm1,
     shiftThresholdCm1,
+    prominenceChangeThreshold,
+    widthChangeThreshold,
+    matrix,
     groups: groups.map(({ observations: _observations, ...group }) => group),
     changes,
   };

@@ -34,7 +34,10 @@
         "language": { "type": "string", "enum": ["ru", "en", "sr"] },
         "reactionMode": { "type": "boolean" },
         "toleranceCm1": { "type": "number", "exclusiveMinimum": 0 },
-        "shiftThresholdCm1": { "type": "number", "exclusiveMinimum": 0 }
+        "shiftThresholdCm1": { "type": "number", "exclusiveMinimum": 0 },
+        "prominenceChangeThreshold": { "type": "number", "minimum": 0 },
+        "widthChangeThreshold": { "type": "number", "minimum": 0 },
+        "userPrompt": { "type": "string", "maxLength": 2000 }
       },
       "additionalProperties": false
     }
@@ -69,7 +72,8 @@
         "shape": { "type": ["string", "null"] },
         "direction": { "type": ["string", "null"] },
         "detectionMethod": { "type": "string" },
-        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "qualityFlags": { "type": "array", "items": { "type": "string" } }
       },
       "additionalProperties": false
     },

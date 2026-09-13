@@ -60,7 +60,16 @@
         "minSeparationCm1": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000 },
         "minWidthCm1": { "type": "number", "minimum": 0 },
         "maxWidthCm1": { "type": "number", "exclusiveMinimum": 0 },
-        "maxPeaks": { "type": "integer", "minimum": 1, "maximum": 1000 }
+        "maxPeaks": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "searchRangeCm1": {
+          "type": "object",
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "number", "minimum": 0 },
+            "max": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

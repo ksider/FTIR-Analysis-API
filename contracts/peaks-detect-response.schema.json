@@ -59,6 +59,7 @@
         "direction": { "type": "string", "enum": ["absorption", "emission", "unknown"] },
         "detectionMethod": { "type": "string", "enum": ["automatic", "manual", "automatic_confirmed", "imported"] },
         "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "qualityFlags": { "type": "array", "items": { "type": "string" } },
         "localWindow": {
           "type": ["array", "null"],
           "maxItems": 1000,
