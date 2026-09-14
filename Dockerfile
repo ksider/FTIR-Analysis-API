@@ -12,6 +12,7 @@ RUN apt-get update \
 
 COPY package.json ./
 COPY server.js ./
+COPY peak_comparison.js ./
 COPY references ./references
 COPY peak_detector ./peak_detector
 
