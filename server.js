@@ -32,11 +32,36 @@ function sendJson(res, status, payload) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': ALLOWED_ORIGIN,
+    'access-control-allow-credentials': 'true',
     'access-control-allow-headers': 'content-type',
     'access-control-allow-methods': 'GET, POST, OPTIONS',
     'cache-control': 'no-store',
   });
   res.end(JSON.stringify(payload));
+}
+
+function payloadSummary(payload) {
+  return {
+    schemaVersion: payload?.schemaVersion || payload?.version || null,
+    spectra: Array.isArray(payload?.spectra)
+      ? payload.spectra.map((spectrum) => ({
+        id: spectrum?.id || null,
+        points: Array.isArray(spectrum?.points) ? spectrum.points.length : 0,
+      }))
+      : [],
+    peakObservations: Array.isArray(payload?.peakObservations) ? payload.peakObservations.length : null,
+    confirmedPeakIds: Array.isArray(payload?.confirmedPeakIds) ? payload.confirmedPeakIds.length : null,
+    confirmedPeaks: Array.isArray(payload?.confirmedPeaks) ? payload.confirmedPeaks.length : null,
+    settings: payload?.settings
+      ? {
+        baselineMethod: payload.settings.baselineMethod || null,
+        smoothingWindow: payload.settings.smoothingWindow || null,
+        minProminence: payload.settings.minProminence ?? null,
+        minSeparationCm1: payload.settings.minSeparationCm1 ?? null,
+        searchRangeCm1: payload.settings.searchRangeCm1 || null,
+      }
+      : null,
+  };
 }
 
 function clientKey(req) {
@@ -547,8 +572,19 @@ async function callProvider(payload, references) {
 
 const server = http.createServer(async (req, res) => {
   const startedAt = Date.now();
-  log('request', { method: req.method, url: req.url, origin: req.headers.origin || null, remote: clientKey(req) });
-  if (req.method === 'OPTIONS') return sendJson(res, 204, {});
+  const requestDetails = {
+    method: req.method,
+    url: req.url,
+    origin: req.headers.origin || null,
+    remote: clientKey(req),
+    contentLength: req.headers['content-length'] || null,
+    userAgent: req.headers['user-agent'] || null,
+  };
+  log('request.start', requestDetails);
+  if (req.method === 'OPTIONS') {
+    log('request.cors_preflight', { ...requestDetails, status: 204 });
+    return sendJson(res, 204, {});
+  }
   if (req.url === '/' && req.method === 'GET') {
     return sendJson(res, 200, {
       ok: true,
@@ -560,7 +596,10 @@ const server = http.createServer(async (req, res) => {
       },
     });
   }
-  if (req.url === '/health' && req.method === 'GET') return sendJson(res, 200, { ok: true, provider: PROVIDER, model: MODEL });
+  if (req.url === '/health' && req.method === 'GET') {
+    log('health.complete', { status: 200, durationMs: Date.now() - startedAt });
+    return sendJson(res, 200, { ok: true, provider: PROVIDER, model: MODEL });
+  }
   if (req.url === '/api/peaks/detect' && req.method === 'POST') {
     if (isRateLimited(req)) {
       log('request.rate_limited', { url: req.url });
@@ -568,11 +607,27 @@ const server = http.createServer(async (req, res) => {
     }
     try {
       const payload = await readJson(req, MAX_DETECT_BODY_BYTES);
+      log('peak_detection.payload', payloadSummary(payload));
       const validationError = validateDetectionPayload(payload);
-      if (validationError) return sendJson(res, 400, { error: validationError });
+      if (validationError) {
+        log('peak_detection.invalid', { error: validationError, durationMs: Date.now() - startedAt });
+        return sendJson(res, 400, { error: validationError });
+      }
       log('peak_detection.start', { spectra: payload.spectra.length });
       const result = await runPeakDetector(payload);
-      log('peak_detection.complete', { peaks: result.peakObservations?.length || 0, engine: result.engine });
+      log('peak_detection.complete', {
+        status: 200,
+        peaks: result.peakObservations?.length || 0,
+        processing: result.processing?.map((item) => ({
+          spectrumId: item.spectrumId,
+          baselineMethod: item.baselineMethod,
+          baselineEngine: item.baselineEngine,
+          diagnostics: item.diagnostics?.x?.length || 0,
+        })) || [],
+        warnings: result.warnings || [],
+        engine: result.engine,
+        durationMs: Date.now() - startedAt,
+      });
       return sendJson(res, 200, result);
     } catch (error) {
       const status = error.statusCode || 502;
@@ -580,13 +635,17 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, status, { error: status === 502 ? 'Peak detector unavailable' : error.message });
     }
   }
-  if (req.url !== '/api/analyze' || req.method !== 'POST') return sendJson(res, 404, { error: 'Not found' });
+  if (req.url !== '/api/analyze' || req.method !== 'POST') {
+    log('request.not_found', { ...requestDetails, status: 404, durationMs: Date.now() - startedAt });
+    return sendJson(res, 404, { error: 'Not found' });
+  }
   if (isRateLimited(req)) {
     log('request.rate_limited', { url: req.url });
     return sendJson(res, 429, { error: 'Rate limit exceeded' });
   }
   try {
     const payload = await readJson(req);
+    log('analysis.payload', payloadSummary(payload));
     const validationError = validatePayload(payload);
     if (validationError) {
       log('request.invalid', { error: validationError });
