@@ -17,8 +17,11 @@ const MAX_PROMPT_PEAKS_PER_SPECTRUM = Number(process.env.MAX_PROMPT_PEAKS_PER_SP
 const MAX_PROMPT_CHANGES = Number(process.env.MAX_PROMPT_CHANGES || 240);
 const PROMPT_VERSION = 'reaction-comparison-v2';
 const requestLog = new Map();
-const MAX_OUTPUT_TOKENS = Number(process.env.LLM_MAX_OUTPUT_TOKENS || (/gemma/i.test(MODEL) ? 6000 : 1800));
-const PROVIDER_TIMEOUT_MS = /gemma/i.test(MODEL) ? 90_000 : 30_000;
+// One FTIR report may contain an assignment for every confirmed peak. 1800
+// tokens truncates a valid JSON object for medium-size peak sets (for example
+// 18 peaks), so Gemini gets a safer default unless explicitly limited.
+const MAX_OUTPUT_TOKENS = Number(process.env.LLM_MAX_OUTPUT_TOKENS || (/gemma/i.test(MODEL) ? 6000 : 3200));
+const PROVIDER_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || (/gemma/i.test(MODEL) ? 90_000 : 60_000));
 
 const referenceDir = path.resolve(
   process.env.REFERENCE_DIR || path.join(__dirname, '..', '.ai', 'ftir-band-assignment', 'references')
@@ -445,7 +448,14 @@ function normalizeResult(result, payload) {
 async function callProvider(payload, references) {
   if (PROVIDER === 'mock') return mockInterpretation(payload);
   const prompt = buildPrompt(payload, references);
-  log('provider.request', { provider: PROVIDER, model: MODEL, peaks: payload.confirmedPeaks.length, promptChars: prompt.length });
+  log('provider.request', {
+    provider: PROVIDER,
+    model: MODEL,
+    peaks: payload.confirmedPeaks.length,
+    promptChars: prompt.length,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    timeoutMs: PROVIDER_TIMEOUT_MS,
+  });
   let response;
   if (PROVIDER === 'gemini') {
     const key = process.env.GEMINI_API_KEY;
@@ -554,11 +564,30 @@ async function callProvider(payload, references) {
     throw new Error(`Provider request failed: ${response.status}`);
   }
   const data = await response.json();
+  const providerCandidate = PROVIDER === 'gemini' ? data.candidates?.[0] : null;
   const text = PROVIDER === 'gemini'
-    ? data.candidates?.[0]?.content?.parts?.[0]?.text
+    ? providerCandidate?.content?.parts?.[0]?.text
     : data.choices?.[0]?.message?.content;
-  const result = normalizeResult(extractJson(text), payload);
-  log('provider.response.ok', { provider: PROVIDER, model: MODEL, responseChars: String(text || '').length });
+  let parsed;
+  try {
+    parsed = extractJson(text);
+  } catch (error) {
+    log('provider.response.invalid_json', {
+      provider: PROVIDER,
+      model: MODEL,
+      finishReason: providerCandidate?.finishReason || null,
+      responseChars: String(text || '').length,
+      error: error.message,
+    });
+    throw new Error('Provider returned incomplete or invalid JSON. Increase LLM_MAX_OUTPUT_TOKENS and retry.');
+  }
+  const result = normalizeResult(parsed, payload);
+  log('provider.response.ok', {
+    provider: PROVIDER,
+    model: MODEL,
+    finishReason: providerCandidate?.finishReason || null,
+    responseChars: String(text || '').length,
+  });
   return {
     ...result,
     schemaVersion: result.schemaVersion || '2.0',

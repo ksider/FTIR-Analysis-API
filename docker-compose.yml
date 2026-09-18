@@ -11,6 +11,8 @@ services:
       LLM_MODEL: ${LLM_MODEL}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       ALLOWED_ORIGIN: ${ALLOWED_ORIGIN}
+      LLM_MAX_OUTPUT_TOKENS: ${LLM_MAX_OUTPUT_TOKENS:-3200}
+      LLM_TIMEOUT_MS: ${LLM_TIMEOUT_MS:-60000}
     ports:
       - "8787:8787"
     restart: unless-stopped
