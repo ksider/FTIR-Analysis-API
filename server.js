@@ -623,6 +623,7 @@ const server = http.createServer(async (req, res) => {
           baselineMethod: item.baselineMethod,
           baselineEngine: item.baselineEngine,
           diagnostics: item.diagnostics?.x?.length || 0,
+          manualMeasurements: item.manualMeasurements?.length || 0,
         })) || [],
         warnings: result.warnings || [],
         engine: result.engine,

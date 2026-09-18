@@ -61,6 +61,15 @@
         "minWidthCm1": { "type": "number", "minimum": 0 },
         "maxWidthCm1": { "type": "number", "exclusiveMinimum": 0 },
         "maxPeaks": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "manualPositionsBySpectrum": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "maxItems": 100,
+            "items": { "type": "number", "minimum": 0 }
+          }
+        },
+        "manualSnapCm1": { "type": "number", "exclusiveMinimum": 0, "maximum": 60 },
         "searchRangeCm1": {
           "type": "object",
           "required": ["min", "max"],

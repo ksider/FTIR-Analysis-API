@@ -24,6 +24,28 @@
           "baselineEngine": { "type": "string" },
           "signalType": { "type": "string", "enum": ["transmittance", "absorbance", "intensity", "unknown"] },
           "displayYUnit": { "type": "string" },
+          "manualMeasurements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["requestedNu", "nu", "direction"],
+              "properties": {
+                "requestedNu": { "type": "number" },
+                "nu": { "type": "number" },
+                "originalNu": { "type": "number" },
+                "height": { "type": ["number", "null"] },
+                "prominence": { "type": ["number", "null"] },
+                "widthCm1": { "type": ["number", "null"] },
+                "fwhmCm1": { "type": ["number", "null"] },
+                "shape": { "type": ["string", "null"] },
+                "direction": { "type": "string" },
+                "confidence": { "type": ["number", "null"] },
+                "qualityFlags": { "type": "array", "items": { "type": "string" } },
+                "localWindow": { "type": "array" }
+              },
+              "additionalProperties": false
+            }
+          },
           "diagnostics": {
             "type": "object",
             "required": ["x", "signal", "baseline", "corrected"],

@@ -223,6 +223,79 @@ def local_fwhm(x_values, values, index, baseline_value):
     return width if width > 0 else None
 
 
+def peak_shape(width):
+    if width is None:
+        return "unknown"
+    if width <= 20:
+        return "sharp"
+    if width >= 80:
+        return "broad"
+    return "band"
+
+
+def manual_measurements(spectrum_id, x_values, signal, corrected, broad_corrected, settings):
+    """Measure user-requested peak positions without applying detector thresholds.
+
+    Automatic detection is intentionally conservative. A manual marker is an
+    explicit user instruction, so it is snapped only to the nearest local
+    absorption maximum and is always measured, even when its prominence is
+    below the automatic detector threshold.
+    """
+    positions_by_spectrum = settings.get("manualPositionsBySpectrum") or {}
+    requested_positions = positions_by_spectrum.get(spectrum_id) or []
+    try:
+        snap_cm1 = max(2.0, min(60.0, float(settings.get("manualSnapCm1", 18.0) or 18.0)))
+    except (TypeError, ValueError):
+        snap_cm1 = 18.0
+    results = []
+    for requested in requested_positions:
+        if not finite(requested):
+            continue
+        requested = float(requested)
+        nearest = min(range(len(x_values)), key=lambda index: abs(x_values[index] - requested))
+        nearby = [
+            index for index, x_value in enumerate(x_values)
+            if abs(x_value - requested) <= snap_cm1
+        ]
+        # FTIR transmittance has already been converted to absorbance here,
+        # therefore a local maximum is the absorption-band apex.
+        index = max(nearby or [nearest], key=lambda item: signal[item])
+        fine_width = scipy_widths_cm1(x_values, corrected, [index]).get(index)
+        if fine_width is None:
+            fine_width = local_fwhm(x_values, corrected, index, 0.0)
+        broad_width = scipy_widths_cm1(x_values, broad_corrected, [index]).get(index)
+        if broad_width is None:
+            broad_width = local_fwhm(x_values, broad_corrected, index, 0.0)
+        # The broad pass is kept specifically for OH/NH-like bands; preserve
+        # its larger FWHM when it is the more informative measurement.
+        available_widths = [width for width in (fine_width, broad_width) if width is not None and width > 0]
+        width = max(available_widths) if available_widths else None
+        local_span = max(3, int(round(80.0 / max(robust_x_step(x_values), 1e-9))))
+        left_floor = min(corrected[max(0, index - local_span):index + 1])
+        right_floor = min(corrected[index:min(len(corrected), index + local_span + 1)])
+        prominence = max(0.0, corrected[index] - max(left_floor, right_floor))
+        local_values = corrected[max(0, index - local_span):min(len(corrected), index + local_span + 1)]
+        local_range = max(local_values) - min(local_values) if local_values else 0.0
+        lo = max(0, index - max(8, local_span // 2))
+        hi = min(len(x_values), index + max(8, local_span // 2) + 1)
+        flags = quality_flags(x_values[index], width)
+        results.append({
+            "requestedNu": round(requested, 4),
+            "nu": round(x_values[index], 4),
+            "originalNu": round(x_values[index], 4),
+            "height": round(max(0.0, corrected[index]), 6),
+            "prominence": round(prominence, 6),
+            "widthCm1": round(float(width), 4) if width is not None else None,
+            "fwhmCm1": round(float(width), 4) if width is not None else None,
+            "shape": peak_shape(width),
+            "direction": "absorption",
+            "confidence": round(min(1.0, prominence / local_range), 4) if local_range > 0 else 0.0,
+            "qualityFlags": flags,
+            "localWindow": [[x_values[item], signal[item]] for item in range(lo, hi)],
+        })
+    return results
+
+
 def detect_spectrum(spectrum, settings):
     points = []
     for item in spectrum.get("points", []):
@@ -356,14 +429,7 @@ def detect_spectrum(spectrum, settings):
         values = broad_corrected if source == "broad" else corrected
         width = widths.get((source, index)) or local_fwhm(x_values, values, index, 0.0)
         nu = x_values[index]
-        if width is None:
-            shape = "unknown"
-        elif width <= 20:
-            shape = "sharp"
-        elif width >= 80:
-            shape = "broad"
-        else:
-            shape = "band"
+        shape = peak_shape(width)
         lo = max(0, index - max(4, min_distance_samples * 2))
         hi = min(len(points), index + max(4, min_distance_samples * 2) + 1)
         local_window = [[x_values[item], y_values[item]] for item in range(lo, hi)]
@@ -384,6 +450,9 @@ def detect_spectrum(spectrum, settings):
             "qualityFlags": flags,
             "localWindow": local_window,
         })
+    measured_manual = manual_measurements(
+        spectrum.get("id"), x_values, smoothed, corrected, broad_corrected, settings
+    )
     warnings = []
     if baseline_warning:
         warnings.append("%s: %s" % (spectrum.get("id", "spectrum"), baseline_warning))
@@ -412,6 +481,7 @@ def detect_spectrum(spectrum, settings):
         "signalType": signal_type,
         "displayYUnit": display_y_unit,
         "searchRangeCm1": {"min": search_min, "max": search_max},
+        "manualMeasurements": measured_manual,
         "diagnostics": diagnostics,
     }
 

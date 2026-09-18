@@ -72,6 +72,32 @@ class PeakDetectorTests(unittest.TestCase):
         self.assertTrue(all(3000 <= peak["nu"] <= 3600 for peak in peaks))
         self.assertFalse(any(abs(peak["nu"] - 1715) <= 5 for peak in peaks))
 
+    def test_measures_manual_position_below_automatic_prominence_threshold(self):
+        x_values = list(range(3700, 2999, -2))
+        points = []
+        for x_value in x_values:
+            broad = 0.35 * math.exp(-((x_value - 3340) / 70) ** 2)
+            points.append([x_value, broad])
+
+        peaks, warnings, processing = detect_spectrum(
+            {"id": "manual", "signalType": "absorbance", "points": points},
+            {
+                "baselineMethod": "none",
+                "smoothingWindow": 5,
+                "minProminence": 1.0,
+                "manualPositionsBySpectrum": {"manual": [3330]},
+                "manualSnapCm1": 18,
+            },
+        )
+
+        self.assertFalse(peaks)
+        self.assertFalse(warnings)
+        measured = processing["manualMeasurements"]
+        self.assertEqual(len(measured), 1)
+        self.assertAlmostEqual(measured[0]["nu"], 3340, delta=4)
+        self.assertIsNotNone(measured[0]["fwhmCm1"])
+        self.assertEqual(measured[0]["shape"], "broad")
+
 
 if __name__ == "__main__":
     unittest.main()
