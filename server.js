@@ -22,6 +22,7 @@ const requestLog = new Map();
 // 18 peaks), so Gemini gets a safer default unless explicitly limited.
 const MAX_OUTPUT_TOKENS = Number(process.env.LLM_MAX_OUTPUT_TOKENS || (/gemma/i.test(MODEL) ? 6000 : 3200));
 const PROVIDER_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || (/gemma/i.test(MODEL) ? 90_000 : 60_000));
+const BYOK_ENABLED = String(process.env.BYOK_ENABLED || '').toLowerCase() === 'true';
 
 const referenceDir = path.resolve(
   process.env.REFERENCE_DIR || path.join(__dirname, '..', '.ai', 'ftir-band-assignment', 'references')
@@ -36,7 +37,7 @@ function sendJson(res, status, payload) {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': ALLOWED_ORIGIN,
     'access-control-allow-credentials': 'true',
-    'access-control-allow-headers': 'content-type',
+    'access-control-allow-headers': 'content-type, authorization, x-ftir-llm-provider, x-ftir-llm-model, x-ftir-llm-api-key',
     'access-control-allow-methods': 'GET, POST, OPTIONS',
     'cache-control': 'no-store',
   });
@@ -69,6 +70,28 @@ function payloadSummary(payload) {
 
 function clientKey(req) {
   return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+}
+
+function requestHeader(req, name, maxLength = 2048) {
+  const value = req.headers[name];
+  const first = Array.isArray(value) ? value[0] : value;
+  return typeof first === 'string' ? first.trim().slice(0, maxLength) : '';
+}
+
+function byokOptions(req) {
+  if (!BYOK_ENABLED) return null;
+  const apiKey = requestHeader(req, 'x-ftir-llm-api-key');
+  if (!apiKey) return null;
+  const provider = requestHeader(req, 'x-ftir-llm-provider', 32).toLowerCase();
+  if (!['gemini', 'mistral', 'mock'].includes(provider)) return null;
+  const model = requestHeader(req, 'x-ftir-llm-model', 256);
+  return { provider, model, apiKey };
+}
+
+function defaultModelFor(provider) {
+  if (provider === 'gemini') return 'gemini-3.5-flash-lite';
+  if (provider === 'mistral') return 'mistral-small-latest';
+  return 'mock';
 }
 
 function isRateLimited(req) {
@@ -445,22 +468,25 @@ function normalizeResult(result, payload) {
   return normalized;
 }
 
-async function callProvider(payload, references) {
-  if (PROVIDER === 'mock') return mockInterpretation(payload);
+async function callProvider(payload, references, byok = null) {
+  const provider = byok?.provider || PROVIDER;
+  const model = byok?.model || (byok ? defaultModelFor(provider) : MODEL);
+  if (provider === 'mock') return mockInterpretation(payload);
   const prompt = buildPrompt(payload, references);
   log('provider.request', {
-    provider: PROVIDER,
-    model: MODEL,
+    provider,
+    model,
+    byok: Boolean(byok),
     peaks: payload.confirmedPeaks.length,
     promptChars: prompt.length,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
     timeoutMs: PROVIDER_TIMEOUT_MS,
   });
   let response;
-  if (PROVIDER === 'gemini') {
-    const key = process.env.GEMINI_API_KEY;
+  if (provider === 'gemini') {
+    const key = byok?.apiKey || process.env.GEMINI_API_KEY;
     if (!key) throw new Error('GEMINI_API_KEY is not configured');
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL)}:generateContent?key=${encodeURIComponent(key)}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
     response = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -546,26 +572,26 @@ async function callProvider(payload, references) {
       }),
       signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
     });
-  } else if (PROVIDER === 'mistral') {
-    const key = process.env.MISTRAL_API_KEY;
+  } else if (provider === 'mistral') {
+    const key = byok?.apiKey || process.env.MISTRAL_API_KEY;
     if (!key) throw new Error('MISTRAL_API_KEY is not configured');
     response = await fetch('https://api.mistral.ai/v1/chat/completions', {
       method: 'POST',
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: MODEL, temperature: 0.1, max_tokens: MAX_OUTPUT_TOKENS, response_format: { type: 'json_object' }, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model, temperature: 0.1, max_tokens: MAX_OUTPUT_TOKENS, response_format: { type: 'json_object' }, messages: [{ role: 'user', content: prompt }] }),
       signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
     });
   } else {
-    throw new Error(`Unsupported provider: ${PROVIDER}`);
+    throw new Error(`Unsupported provider: ${provider}`);
   }
   if (!response.ok) {
     const providerError = (await response.text()).slice(0, 800);
-    log('provider.response.error', { status: response.status, provider: PROVIDER, model: MODEL, body: providerError });
+    log('provider.response.error', { status: response.status, provider, model, byok: Boolean(byok), body: providerError });
     throw new Error(`Provider request failed: ${response.status}`);
   }
   const data = await response.json();
-  const providerCandidate = PROVIDER === 'gemini' ? data.candidates?.[0] : null;
-  const text = PROVIDER === 'gemini'
+  const providerCandidate = provider === 'gemini' ? data.candidates?.[0] : null;
+  const text = provider === 'gemini'
     ? providerCandidate?.content?.parts?.[0]?.text
     : data.choices?.[0]?.message?.content;
   let parsed;
@@ -573,8 +599,9 @@ async function callProvider(payload, references) {
     parsed = extractJson(text);
   } catch (error) {
     log('provider.response.invalid_json', {
-      provider: PROVIDER,
-      model: MODEL,
+      provider,
+      model,
+      byok: Boolean(byok),
       finishReason: providerCandidate?.finishReason || null,
       responseChars: String(text || '').length,
       error: error.message,
@@ -583,8 +610,9 @@ async function callProvider(payload, references) {
   }
   const result = normalizeResult(parsed, payload);
   log('provider.response.ok', {
-    provider: PROVIDER,
-    model: MODEL,
+    provider,
+    model,
+    byok: Boolean(byok),
     finishReason: providerCandidate?.finishReason || null,
     responseChars: String(text || '').length,
   });
@@ -594,7 +622,7 @@ async function callProvider(payload, references) {
     comparison: result.comparison || payload.comparison || null,
     changeSummary: result.changeSummary || buildChangeSummary(payload.comparison),
     promptVersion: result.promptVersion || PROMPT_VERSION,
-    model: result.model || MODEL,
+    model: result.model || model,
     created_at: result.created_at || new Date().toISOString(),
   };
 }
@@ -682,14 +710,16 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 400, { error: validationError });
     }
     const normalizedPayload = normalizeAnalysisPayload(payload);
+    const requestByok = byokOptions(req);
     log('analysis.start', {
       confirmedPeaks: normalizedPayload.confirmedPeaks.length,
       observations: normalizedPayload.peakObservations.length,
       groups: normalizedPayload.peakGroups.length,
       files: normalizedPayload.spectra?.length || normalizedPayload.spectrum?.files?.length || 0,
+      byok: Boolean(requestByok),
     });
     const references = await loadReferences();
-    const result = await callProvider(normalizedPayload, references);
+    const result = await callProvider(normalizedPayload, references, requestByok);
     log('analysis.complete', { status: 200, durationMs: Date.now() - startedAt });
     return sendJson(res, 200, { ok: true, result });
   } catch (error) {
