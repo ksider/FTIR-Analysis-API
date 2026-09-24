@@ -23,6 +23,10 @@ const requestLog = new Map();
 const MAX_OUTPUT_TOKENS = Number(process.env.LLM_MAX_OUTPUT_TOKENS || (/gemma/i.test(MODEL) ? 6000 : 3200));
 const PROVIDER_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || (/gemma/i.test(MODEL) ? 90_000 : 60_000));
 const BYOK_ENABLED = String(process.env.BYOK_ENABLED || '').toLowerCase() === 'true';
+const REFERENCE_SERVICE_URL = String(process.env.REFERENCE_SERVICE_URL || '').trim().replace(/\/$/, '');
+const REFERENCE_SERVICE_TOKEN = String(process.env.REFERENCE_SERVICE_TOKEN || '').trim();
+const REFERENCE_TIMEOUT_MS = Number(process.env.REFERENCE_TIMEOUT_MS || 30_000);
+const MAX_REFERENCE_BODY_BYTES = Number(process.env.MAX_REFERENCE_BODY_BYTES || 8 * 1024 * 1024);
 
 const referenceDir = path.resolve(
   process.env.REFERENCE_DIR || path.join(__dirname, '..', '.ai', 'ftir-band-assignment', 'references')
@@ -148,6 +152,78 @@ function validateDetectionPayload(payload) {
     }
   }
   return null;
+}
+
+function validateReferenceSearchPayload(payload) {
+  if (!payload || typeof payload !== 'object') return 'Payload must be an object';
+  if (!Array.isArray(payload.points) || payload.points.length < 5 || payload.points.length > 500000) {
+    return 'points must contain between 5 and 500000 [wavenumber, intensity] pairs';
+  }
+  if (payload.signalType !== 'transmittance' && payload.signalType !== 'absorbance') {
+    return 'signalType must be transmittance or absorbance';
+  }
+  if (!Number.isInteger(Number(payload.topK)) || Number(payload.topK) < 1 || Number(payload.topK) > 20) {
+    return 'topK must be an integer from 1 to 20';
+  }
+  for (const point of payload.points) {
+    if (!Array.isArray(point) || point.length !== 2 || !Number.isFinite(Number(point[0])) || !Number.isFinite(Number(point[1]))) {
+      return 'Every point must be a finite [wavenumber, intensity] pair';
+    }
+  }
+  return null;
+}
+
+function validateReferenceMetadataPayload(payload) {
+  if (!payload || typeof payload !== 'object') return 'Payload must be an object';
+  if (typeof payload.smiles !== 'string' || !payload.smiles.trim() || payload.smiles.length > 4096) {
+    return 'smiles must be a non-empty string up to 4096 characters';
+  }
+  return null;
+}
+
+function referenceServiceEndpoint(pathname) {
+  if (!REFERENCE_SERVICE_URL || !REFERENCE_SERVICE_TOKEN) {
+    throw Object.assign(new Error('Reference service is not configured on this server'), { statusCode: 503 });
+  }
+  try {
+    const base = new URL(`${REFERENCE_SERVICE_URL}/`);
+    return new URL(pathname.replace(/^\//, ''), base).toString();
+  } catch {
+    throw Object.assign(new Error('REFERENCE_SERVICE_URL is invalid'), { statusCode: 503 });
+  }
+}
+
+async function proxyReferenceRequest(pathname, payload) {
+  const url = referenceServiceEndpoint(pathname);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REFERENCE_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-service-token': REFERENCE_SERVICE_TOKEN,
+      },
+      signal: controller.signal,
+      body: JSON.stringify(payload),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = body.detail || body.error || `Reference service returned ${response.status}`;
+      const statusCode = response.status >= 400 && response.status < 500 && response.status !== 401 && response.status !== 403
+        ? response.status
+        : 502;
+      throw Object.assign(new Error(message), { statusCode });
+    }
+    return body;
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw Object.assign(new Error('Reference service timed out'), { statusCode: 504 });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function runPeakDetector(payload) {
@@ -650,6 +726,8 @@ const server = http.createServer(async (req, res) => {
         health: 'GET /health',
         detectPeaks: 'POST /api/peaks/detect',
         analyze: 'POST /api/analyze',
+        referenceMatches: 'POST /api/reference-matches',
+        referenceMetadata: 'POST /api/reference-metadata',
       },
     });
   }
@@ -693,6 +771,59 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, status, { error: status === 502 ? 'Peak detector unavailable' : error.message });
     }
   }
+  if (req.url === '/api/reference-matches' && req.method === 'POST') {
+    if (isRateLimited(req)) {
+      log('request.rate_limited', { url: req.url });
+      return sendJson(res, 429, { error: 'Rate limit exceeded' });
+    }
+    try {
+      const payload = await readJson(req, MAX_REFERENCE_BODY_BYTES);
+      const validationError = validateReferenceSearchPayload(payload);
+      if (validationError) {
+        log('reference.search.invalid', { error: validationError, durationMs: Date.now() - startedAt });
+        return sendJson(res, 400, { error: validationError });
+      }
+      log('reference.search.start', {
+        points: payload.points.length,
+        signalType: payload.signalType,
+        topK: payload.topK,
+      });
+      const result = await proxyReferenceRequest('/api/v1/search', payload);
+      log('reference.search.complete', {
+        status: 200,
+        matches: Array.isArray(result.matches) ? result.matches.length : 0,
+        durationMs: Date.now() - startedAt,
+      });
+      return sendJson(res, 200, result);
+    } catch (error) {
+      const status = error.statusCode || 502;
+      console.error(`[${new Date().toISOString()}] reference.search.error`, { status, message: error.message, durationMs: Date.now() - startedAt });
+      return sendJson(res, status, { error: status === 502 ? 'Reference service unavailable' : error.message });
+    }
+  }
+  if (req.url === '/api/reference-metadata' && req.method === 'POST') {
+    if (isRateLimited(req)) {
+      log('request.rate_limited', { url: req.url });
+      return sendJson(res, 429, { error: 'Rate limit exceeded' });
+    }
+    try {
+      const payload = await readJson(req);
+      const validationError = validateReferenceMetadataPayload(payload);
+      if (validationError) return sendJson(res, 400, { error: validationError });
+      log('reference.metadata.start', { smilesLength: payload.smiles.trim().length });
+      const result = await proxyReferenceRequest('/api/v1/metadata/resolve', payload);
+      log('reference.metadata.complete', {
+        status: 200,
+        found: Boolean(result.metadata?.found),
+        durationMs: Date.now() - startedAt,
+      });
+      return sendJson(res, 200, result);
+    } catch (error) {
+      const status = error.statusCode || 502;
+      console.error(`[${new Date().toISOString()}] reference.metadata.error`, { status, message: error.message, durationMs: Date.now() - startedAt });
+      return sendJson(res, status, { error: status === 502 ? 'Reference metadata service unavailable' : error.message });
+    }
+  }
   if (req.url !== '/api/analyze' || req.method !== 'POST') {
     log('request.not_found', { ...requestDetails, status: 404, durationMs: Date.now() - startedAt });
     return sendJson(res, 404, { error: 'Not found' });
@@ -730,5 +861,11 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  log('server.ready', { address: `http://${HOST}:${PORT}`, provider: PROVIDER, model: MODEL, allowedOrigin: ALLOWED_ORIGIN });
+  log('server.ready', {
+    address: `http://${HOST}:${PORT}`,
+    provider: PROVIDER,
+    model: MODEL,
+    allowedOrigin: ALLOWED_ORIGIN,
+    referenceServiceConfigured: Boolean(REFERENCE_SERVICE_URL && REFERENCE_SERVICE_TOKEN),
+  });
 });
